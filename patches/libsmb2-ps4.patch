@@ -38,3 +38,28 @@ index dd0352c..8ec4146 100644
  #define __bswap64 __bswap_64
  #endif
  
+diff --git a/lib/sync.c b/lib/sync.c
+index 4467226..b5d14fb 100644
+--- a/lib/sync.c
++++ b/lib/sync.c
+@@ -113,9 +113,17 @@ static int wait_for_reply(struct smb2_context *smb2,
+ 		pfd.fd = smb2_get_fd(smb2);
+ 		pfd.events = smb2_which_events(smb2);
+ 
+-		if (poll(&pfd, 1, 1000) < 0) {
+-			smb2_set_error(smb2, "Poll failed");
+-			return -1;
++		int poll_result = poll(&pfd, 1, 1000);
++		if (poll_result < 0) {
++			if (errno != EINTR) {
++				int poll_errno = errno;
++				smb2_set_error(smb2, "Poll failed: errno=%d (%s), fd=%d, events=0x%x, revents=0x%x",
++					       poll_errno, strerror(poll_errno), pfd.fd,
++					       (unsigned int)(unsigned short)pfd.events,
++					       (unsigned int)(unsigned short)pfd.revents);
++				return -1;
++			}
++			pfd.revents = 0;
+ 		}
+                 if (smb2->timeout) {
+                         smb2_timeout_pdus(smb2);
