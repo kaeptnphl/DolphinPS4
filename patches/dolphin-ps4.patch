@@ -30838,7 +30838,7 @@ index 0000000..f5a5796
 +extern "C" void ps4_boot_trace(const char* line);  // port/ps4_crashlog.cpp
 +
 +// The right-to-left hook of ImGui's text drawing (Externals/imgui/imgui/imgui_draw.cpp).
-+extern bool (*GImFontRtlReorder)(const char* begin, const char* end, char* out);
++bool (*GImFontRtlReorder)(const char* begin, const char* end, char* out) = nullptr;
 +
 +namespace PS4Lang
 +{
