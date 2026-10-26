@@ -66,3 +66,71 @@ index 7897efb..2a06d04 100644
  		((struct sockaddr_in6 *)&rpc->s)->sin6_len =
                          sizeof(struct sockaddr_in6);
  #endif
+diff --git a/lib/libnfs-sync.c b/lib/libnfs-sync.c
+index 72a3365..c6dd95a 100644
+--- a/lib/libnfs-sync.c
++++ b/lib/libnfs-sync.c
+@@ -231,8 +231,13 @@ wait_for_reply(struct rpc_context *rpc, struct sync_cb_data *cb_data)
+ 
+ 		ret = poll(&pfd, 1, rpc_get_poll_timeout(rpc));
+ 		if (ret < 0) {
+-			rpc_set_error(rpc, "Poll failed");
+-			revents = -1;
++			if (errno != EINTR) {
++				rpc_set_error(rpc, "Poll failed: errno=%d", errno);
++				revents = -1;
++			} else {
++				pfd.revents = 0;
++				revents = 0;
++			}
+ 		} else {
+ 			revents = pfd.revents;
+ 		}
+@@ -277,8 +282,13 @@ wait_for_nfs_reply(struct nfs_context *nfs, struct sync_cb_data *cb_data)
+ 
+ 		ret = poll(&pfd, 1, rpc_get_poll_timeout(nfs->rpc));
+ 		if (ret < 0) {
+-			nfs_set_error(nfs, "Poll failed");
+-			revents = -1;
++			if (errno != EINTR) {
++				nfs_set_error(nfs, "Poll failed: errno=%d", errno);
++				revents = -1;
++			} else {
++				pfd.revents = 0;
++				revents = 0;
++			}
+ 		} else {
+ 			revents = pfd.revents;
+ 		}
+@@ -3065,9 +3075,12 @@ nfs_find_local_servers(void)
+ 
+       if (poll(&pfd, 1, mpt) < 0)
+       {
+-        free_nfs_srvr_list(data.srvrs);
+-        rpc_destroy_context(rpc);
+-        return NULL;
++        if (errno != EINTR) {
++          free_nfs_srvr_list(data.srvrs);
++          rpc_destroy_context(rpc);
++          return NULL;
++        }
++        pfd.revents = 0;
+       }
+       if (pfd.revents == 0)
+       {
+@@ -3218,9 +3231,12 @@ nfs_find_local_servers(void)
+ 			+    (tv_start.tv_sec *1000 + tv_start.tv_usec / 1000);
+ 
+ 			if (poll(&pfd, 1, mpt) < 0) {
+-				free_nfs_srvr_list(data.srvrs);
+-				rpc_destroy_context(rpc);
+-				return NULL;
++				if (errno != EINTR) {
++					free_nfs_srvr_list(data.srvrs);
++					rpc_destroy_context(rpc);
++					return NULL;
++				}
++				pfd.revents = 0;
+ 			}
+ 			if (pfd.revents == 0) {
+ 				break;
