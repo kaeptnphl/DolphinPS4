@@ -25213,10 +25213,10 @@ index 0000000..0ab9db5
 +}  // namespace PS4Cheats
 diff --git a/Source/Core/DolphinNoGUI/PS4Controls.cpp b/Source/Core/DolphinNoGUI/PS4Controls.cpp
 new file mode 100644
-index 0000000..d2c70c2
+index 0000000..0000000
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4Controls.cpp
-@@ -0,0 +1,860 @@
+@@ -0,0 +1,912 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -25881,12 +25881,64 @@ index 0000000..d2c70c2
 +  SyncPlayers(device);
 +}
 +
++extern "C" int ps4_usb_faces;  // PS4Pad.cpp
++
 +void SetWiiAttachment(const std::string& extension, bool sideways, bool upright)
 +{
++  ps4_usb_faces = extension == "nunchuk" ? 0 : 1;
 +  Common::IniFile ini;
 +  ini.Load(Path(Device::Wii));
 +  Common::IniFile::Section* section = ini.GetOrCreateSection(Section(Device::Wii));
-+  section->Set("Extension", std::string(extension == "none" ? "None" : "Nunchuk"));
++  section->Set("Extension", std::string(extension == "none"    ? "None" :
++                                         extension == "classic" ? "Classic" :
++                                                                  "Nunchuk"));
++  // The Wii Remotes own Home would fire together with the Classic Controllers "-" (Touchpad).
++  std::string remote_home;
++  section->Get("Buttons/Home", &remote_home);
++  if (extension == "classic" && (remote_home.empty() || remote_home == "Touchpad"))
++    section->Set("Buttons/Home", std::string("L3"));
++  else if (extension != "classic" && remote_home == "L3")
++    section->Set("Buttons/Home", std::string("Touchpad"));
++  if (extension == "nunchuk")
++  {
++    // An adapter's Nunchuk: Z and C arrive as its A and B (USB A / USB B).
++    std::string value;
++    section->Get("Nunchuk/Buttons/Z", &value);
++    if (value.empty() || value == "L2")
++      section->Set("Nunchuk/Buttons/Z", std::string("L2 | `USB A`"));
++    section->Get("Nunchuk/Buttons/C", &value);
++    if (value.empty() || value == "L1")
++      section->Set("Nunchuk/Buttons/C", std::string("L1 | `USB B`"));
++  }
++  if (extension == "classic")
++  {
++    // Same layout as the DualShock 4 Wii Remote; the sticks and ZL/ZR/L/R as on a real one.
++    constexpr const char* CLASSIC[][2] = {
++        {"Classic/Buttons/A", "Circle"},       {"Classic/Buttons/B", "Cross"},
++        {"Classic/Buttons/X", "Triangle"},      {"Classic/Buttons/Y", "Square"},
++        {"Classic/Buttons/ZL", "L2"},         {"Classic/Buttons/ZR", "R2"},
++        {"Classic/Buttons/-", "Touchpad"},          {"Classic/Buttons/+", "Options"},
++        {"Classic/Buttons/Home", "L3"}, {"Classic/Triggers/L", "L1"},
++        {"Classic/Triggers/R", "R1"},         {"Classic/Triggers/L-Analog", "L1"},
++        {"Classic/Triggers/R-Analog", "R1"},  {"Classic/D-Pad/Up", "`Pad N`"},
++        {"Classic/D-Pad/Down", "`Pad S`"},    {"Classic/D-Pad/Left", "`Pad W`"},
++        {"Classic/D-Pad/Right", "`Pad E`"},   {"Classic/Left Stick/Up", "`Left Y-`"},
++        {"Classic/Left Stick/Down", "`Left Y+`"}, {"Classic/Left Stick/Left", "`Left X-`"},
++        {"Classic/Left Stick/Right", "`Left X+`"}, {"Classic/Right Stick/Up", "`Right Y-`"},
++        {"Classic/Right Stick/Down", "`Right Y+`"}, {"Classic/Right Stick/Left", "`Right X-`"},
++        {"Classic/Right Stick/Right", "`Right X+`"}};
++    for (const auto& [key, input] : CLASSIC)
++    {
++      std::string value;
++      // The first layout had A/B and X/Y the wrong way round: replace that one too.
++      const std::string old = key == "Classic/Buttons/A" ? "Cross" :
++                              key == "Classic/Buttons/B" ? "Circle" :
++                              key == "Classic/Buttons/X" ? "Square" :
++                              key == "Classic/Buttons/Y" ? "Triangle" : "";
++      if (!section->Get(key, &value) || value.empty() || value == old)
++        section->Set(key, std::string(input));
++    }
++  }
 +  section->Set("Options/Sideways Wiimote", std::string(sideways ? "True" : "False"));
 +  // Dolphin turns the Wii Remote's motion (the DualShock 4's sensors included) by these two:
 +  // Sideways and Upright together hold it like a steering wheel.
@@ -26782,10 +26834,10 @@ index 0000000..5157e21
 +}  // namespace PS4Glyphs
 diff --git a/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp b/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp
 new file mode 100644
-index 0000000..12b2e0c
+index 0000000..0000000
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4IngameMenu.cpp
-@@ -0,0 +1,3929 @@
+@@ -0,0 +1,3946 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -26807,12 +26859,15 @@ index 0000000..12b2e0c
 +#include <imgui.h>
 +#include <orbis/ImeDialog.h>
 +#include <orbis/Pad.h>
++
++extern "C" int ps4_pad_read(int handle, OrbisPadData* data);  // InputCommon/.../PS4Pad/PS4Pad.cpp
 +#include <orbis/Sysmodule.h>
 +#include <orbis/UserService.h>
 +#include <orbis/SystemService.h>
 +#include <orbis/libkernel.h>
 +
 +#include "Core/ConfigManager.h"
++#include "DolphinNoGUI/Platform.h"
 +#include "Core/Core.h"
 +#include "Core/State.h"
 +#include "Common/FileUtil.h"
@@ -27726,8 +27781,9 @@ index 0000000..12b2e0c
 +        break;
 +      case MAIN_WII_EXTENSION:
 +        rows.push_back({"Wii Extension",
-+                        PS4Settings::Get("wii_extension", s_game_id) == "none" ? "None" :
-+                                                                                 "Nunchuk"});
++                        PS4Settings::Get("wii_extension", s_game_id) == "none"    ? "None" :
++                        PS4Settings::Get("wii_extension", s_game_id) == "classic" ? "Classic Controller" :
++                                                                                    "Nunchuk"});
 +        break;
 +      case MAIN_WII_SIDEWAYS:
 +        rows.push_back({"Hold Wii Remote",
@@ -27812,7 +27868,9 @@ index 0000000..12b2e0c
 +      rows.push_back({"Wii Remote", "", true});
 +      keys.push_back("");
 +      rows.push_back({"Extension",
-+                      PS4Settings::Get("wii_extension", s_game_id) == "none" ? "None" : "Nunchuk"});
++                      PS4Settings::Get("wii_extension", s_game_id) == "none"    ? "None" :
++                      PS4Settings::Get("wii_extension", s_game_id) == "classic" ? "Classic Controller" :
++                                                                                  "Nunchuk"});
 +      keys.push_back("wii:extension");
 +      rows.push_back({"Hold Wii Remote",
 +                      PS4Settings::Get("wii_sideways", s_game_id) != "on" ? "Pointed at TV" :
@@ -28594,7 +28652,10 @@ index 0000000..12b2e0c
 +  if (item == MAIN_WII_EXTENSION)
 +  {
 +    key = "wii_extension";
-+    value = PS4Settings::Get(key, s_game_id) == "none" ? "nunchuk" : "none";
++    static const char* const EXTENSIONS[] = {"nunchuk", "classic", "none"};
++    const std::string current = PS4Settings::Get(key, s_game_id);
++    const int now = current == "classic" ? 1 : current == "none" ? 2 : 0;
++    value = EXTENSIONS[(now + direction + 3) % 3];
 +    PS4Settings::Set(key, value, s_game_id);
 +  }
 +  else if (item == MAIN_WII_SIDEWAYS)
@@ -28627,12 +28688,18 @@ index 0000000..12b2e0c
 +    value = MODES[(now + direction + 3) % 3];
 +    PS4Settings::Set(key, value, s_game_id);
 +  }
-+  const bool nunchuk = PS4Settings::Get("wii_extension", s_game_id) != "none";
++  const std::string extension = PS4Settings::Get("wii_extension", s_game_id);
++  const bool nunchuk = extension != "none" && extension != "classic";
 +  const bool sideways = PS4Settings::Get("wii_sideways", s_game_id) == "on";
 +  const bool upright = PS4Settings::Get("wii_upright", s_game_id) == "on";
 +  // The controller files too: what Dolphin reads when the layout is reloaded (Controls page).
 +  PS4Controls::SetWiiTilt(PS4Settings::Get("wii_tilt", s_game_id), false);
-+  PS4Controls::SetWiiAttachment(nunchuk ? "nunchuk" : "none", sideways, upright);
++  if (key == "wii_extension")
++  {
++    Platform::SetPS4Option("wii_extension", extension);
++    Platform::ApplyPS4Players();
++  }
++  PS4Controls::SetWiiAttachment(extension == "classic" ? "classic" : nunchuk ? "nunchuk" : "none", sideways, upright);
 +  if (key == "wii_tilt" || key == "wii_touchpad")
 +  {
 +    // New bindings (the accelerometer, the stick, the touchpad): Dolphin reads the layout again.
@@ -28651,8 +28718,10 @@ index 0000000..12b2e0c
 +    {
 +      auto* attachments = static_cast<ControllerEmu::Attachments*>(
 +          Wiimote::GetWiimoteGroup(player, WiimoteEmu::WiimoteGroup::Attachments));
-+      attachments->SetSelectedAttachment(nunchuk ? WiimoteEmu::ExtensionNumber::NUNCHUK :
-+                                                   WiimoteEmu::ExtensionNumber::NONE);
++      attachments->SetSelectedAttachment(
++          nunchuk ? WiimoteEmu::ExtensionNumber::NUNCHUK :
++          extension == "classic" ? WiimoteEmu::ExtensionNumber::CLASSIC :
++                                   WiimoteEmu::ExtensionNumber::NONE);
 +      auto* options = Wiimote::GetWiimoteGroup(player, WiimoteEmu::WiimoteGroup::Options);
 +      for (auto& setting : options->numeric_settings)
 +      {
@@ -28663,7 +28732,9 @@ index 0000000..12b2e0c
 +      }
 +    }
 +  }
-+  Toast(key == "wii_extension" ? (nunchuk ? "Nunchuk plugged in" : "Nunchuk unplugged") :
++  Toast(key == "wii_extension" ? (nunchuk ? "Nunchuk plugged in" :
++                                      extension == "classic" ? "Classic Controller plugged in" :
++                                                               "Extension unplugged") :
 +        key == "wii_touchpad" ?
 +            (value == "pointer" ? "Touchpad: your finger aims" :
 +             value == "swing"   ? "Touchpad: swipe to swing the Wii Remote" :
@@ -30462,10 +30533,8 @@ index 0000000..12b2e0c
 +    }
 +    return;
 +  }
-+  if (ps4_pad_handle < 0)
-+    return;
 +  OrbisPadData data = {};
-+  if (scePadReadState(ps4_pad_handle, &data) != 0 || !data.connected)
++  if (ps4_pad_read(ps4_pad_handle, &data) != 0 || !data.connected)
 +    return;
 +  const uint32_t held = data.buttons;
 +  if (s_ime_purpose || s_ime_next)
@@ -32032,7 +32101,7 @@ index 0000000..4859a4b
 +     {{"100", "100"}, {"90", "90"}, {"80", "80"}, {"70", "70"}, {"60", "60"}, {"50", "50"},
 +      {"40", "40"}, {"30", "30"}, {"20", "20"}, {"10", "10"}, {"0", "0"}},
 +     "100", true, "Volume of the games' sound."},
-+    {"wii_extension", "Wii Extension", "System", {{"nunchuk", "Nunchuk"}, {"none", "None"}},
++    {"wii_extension", "Wii Extension", "System", {{"nunchuk", "Nunchuk"}, {"classic", "Classic Controller"}, {"none", "None"}},
 +     "nunchuk", false,
 +     "What is plugged into the Wii Remote. Wii Sports and similar games need None."},
 +    {"wii_sideways", "Sideways Wii Remote", "System", {{"off", "Off"}, {"on", "On"}}, "off",
@@ -33508,10 +33577,10 @@ index 0000000..914dbb5
 +}  // namespace PS4Updater
 diff --git a/Source/Core/DolphinNoGUI/PS4XMB.cpp b/Source/Core/DolphinNoGUI/PS4XMB.cpp
 new file mode 100755
-index 0000000..2558f49
+index 0000000000..a4be8b135a
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PS4XMB.cpp
-@@ -0,0 +1,7192 @@
+@@ -0,0 +1,7194 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -33543,6 +33612,8 @@ index 0000000..2558f49
 +#include <orbis/Sysmodule.h>
 +#include <picojson.h>
 +#include <orbis/Pad.h>
++
++extern "C" int ps4_pad_read(int handle, OrbisPadData* data);  // InputCommon/.../PS4Pad/PS4Pad.cpp
 +#include <orbis/SystemService.h>
 +#include <orbis/UserService.h>
 +#include <orbis/libkernel.h>
@@ -33997,7 +34068,7 @@ index 0000000..2558f49
 +  // The pad's raw state (button capture for remapping).
 +  bool Raw(OrbisPadData* out)
 +  {
-+    return m_pad >= 0 && scePadReadState(m_pad, out) == 0 && out->connected;
++    return m_pad >= 0 && ps4_pad_read(m_pad, out) == 0 && out->connected;
 +  }
 +  // Buttons that went down this frame (directions repeat while held).
 +  uint32_t Poll(float dt)
@@ -34006,7 +34077,7 @@ index 0000000..2558f49
 +    if (m_pad >= 0)
 +    {
 +      OrbisPadData data = {};
-+      if (scePadReadState(m_pad, &data) == 0 && data.connected)
++      if (ps4_pad_read(m_pad, &data) == 0 && data.connected)
 +      {
 +        const uint32_t b = data.buttons;
 +        if ((b & ORBIS_PAD_BUTTON_UP) || data.leftStick.y < 50)
@@ -39410,7 +39481,7 @@ index 0000000..2558f49
 +    else if (key == "tex_hash_once")
 +      continue;
 +    else if (key == "wii_extension")
-+      parts.push_back(value == "none" ? "no Nunchuk" : "Nunchuk");
++      parts.push_back(value == "none" ? "no Nunchuk" : value == "classic" ? "Classic Controller" : "Nunchuk");
 +    else if (key == "wii_sideways")
 +      parts.push_back(value == "on" ? "sideways Wii Remote" : "Wii Remote pointed at the TV");
 +    else if (key == "wii_upright")
@@ -41425,7 +41496,7 @@ index 0000000..f15dbc7
 +};
 +}  // namespace PS4XMB
 diff --git a/Source/Core/DolphinNoGUI/Platform.h b/Source/Core/DolphinNoGUI/Platform.h
-index f4dc8a9..0c37736 100644
+index f4dc8a9474..932678d8cd 100644
 --- a/Source/Core/DolphinNoGUI/Platform.h
 +++ b/Source/Core/DolphinNoGUI/Platform.h
 @@ -5,6 +5,7 @@
@@ -41436,7 +41507,7 @@ index f4dc8a9..0c37736 100644
  
  #include "Common/Flag.h"
  #include "Common/WindowSystemInfo.h"
-@@ -47,6 +48,20 @@ public:
+@@ -47,6 +48,22 @@ public:
    static std::unique_ptr<Platform> CreateMacOSPlatform();
  #endif
  
@@ -41450,6 +41521,8 @@ index f4dc8a9..0c37736 100644
 +  static std::string GetPS4Option(const std::string& key, const std::string& default_value);
 +  // One GameCube port / Wii Remote per connected DualShock 4 (up to 4 players).
 +  static void ApplyPS4Players();
++  // Changes an option while running (the in-game menu), then ApplyPS4Players re-reads it.
++  static void SetPS4Option(const std::string& key, const std::string& value);
 +  // The memory card the menus put in Slot A (PS4MemoryCards), before a game starts.
 +  static void ApplyPS4MemoryCards();
 +#endif
@@ -41459,10 +41532,11 @@ index f4dc8a9..0c37736 100644
  
 diff --git a/Source/Core/DolphinNoGUI/PlatformPS4.cpp b/Source/Core/DolphinNoGUI/PlatformPS4.cpp
 new file mode 100644
-index 0000000..81f1e97
+new file mode 100644
+index 0000000..0000000
 --- /dev/null
 +++ b/Source/Core/DolphinNoGUI/PlatformPS4.cpp
-@@ -0,0 +1,2251 @@
+@@ -0,0 +1,2259 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -43135,6 +43209,11 @@ index 0000000..81f1e97
 +  return it == s_options.end() ? default_value : it->second;
 +}
 +
++void Platform::SetPS4Option(const std::string& key, const std::string& value)
++{
++  s_options[key] = value;
++}
++
 +extern "C" int ps4_pad_count;  // InputCommon/ControllerInterface/PS4Pad/PS4Pad.cpp
 +
 +// The game being started is a Wii one (a Wii disc, a .wad, or Wii homebrew); set before Dolphin
@@ -43150,7 +43229,10 @@ index 0000000..81f1e97
 +void Platform::ApplyPS4Players()
 +{
 +  const int players = std::clamp(ps4_pad_count, 1, 4);
-+  const std::string wii_input = s_wii_game ? GetPS4Option("wii_input", "both") : "both";
++  std::string wii_input = s_wii_game ? GetPS4Option("wii_input", "both") : "both";
++  // The Classic Controller is a Wii Remote extension: no GameCube controller beside it.
++  if (s_wii_game && GetPS4Option("wii_extension", "nunchuk") == "classic")
++    wii_input = "wiimote";
 +  for (int i = 0; i < 4; i++)
 +  {
 +    const auto si = i < players && wii_input != "wiimote" ? SerialInterface::SIDEVICE_GC_CONTROLLER :
@@ -43715,7 +43797,7 @@ index 0000000..81f1e97
 +}
 +}  // namespace PS4Center
 diff --git a/Source/Core/InputCommon/CMakeLists.txt b/Source/Core/InputCommon/CMakeLists.txt
-index 5cc6b66..67933de 100644
+index 5cc6b66ca6..d0eab1aee1 100644
 --- a/Source/Core/InputCommon/CMakeLists.txt
 +++ b/Source/Core/InputCommon/CMakeLists.txt
 @@ -1,7 +1,6 @@
@@ -43735,7 +43817,7 @@ index 5cc6b66..67933de 100644
    target_link_libraries(inputcommon PUBLIC LibUSB::LibUSB)
  endif()
  
-@@ -197,3 +196,17 @@ if(TARGET Hidapi::Hidapi)
+@@ -197,3 +196,21 @@ if(TARGET Hidapi::Hidapi)
    target_link_libraries(inputcommon PUBLIC Hidapi::Hidapi)
    target_compile_definitions(inputcommon PRIVATE -DHAVE_HIDAPI=1)
  endif()
@@ -43752,6 +43834,10 @@ index 5cc6b66..67933de 100644
 +    ControllerInterface/PS4Pad/PS4Pad.cpp
 +    ControllerInterface/PS4Pad/PS4Pad.h
 +  )
++  # Third-party USB pads (8BitDo GBros. in XInput mode, Xbox 360 class pads): usbpad, through
++  # sceUsbd, adds their input to the player's DualShock 4 device.
++  add_subdirectory(ControllerInterface/PS4Pad/usbpad)
++  target_link_libraries(inputcommon PRIVATE usbpad)
 +endif()
 diff --git a/Source/Core/InputCommon/ControllerInterface/ControllerInterface.cpp b/Source/Core/InputCommon/ControllerInterface/ControllerInterface.cpp
 index 20fd517..6ea0780 100644
@@ -43793,10 +43879,11 @@ index 8f7f4ba..34feb8e 100644
  {
 diff --git a/Source/Core/InputCommon/ControllerInterface/PS4Pad/PS4Pad.cpp b/Source/Core/InputCommon/ControllerInterface/PS4Pad/PS4Pad.cpp
 new file mode 100644
-index 0000000..b3df183
+new file mode 100644
+index 0000000..0000000
 --- /dev/null
 +++ b/Source/Core/InputCommon/ControllerInterface/PS4Pad/PS4Pad.cpp
-@@ -0,0 +1,798 @@
+@@ -0,0 +1,899 @@
 +// Copyright 2026 Dolphin Emulator Project
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -43821,6 +43908,7 @@ index 0000000..b3df183
 +#include "Common/CommonTypes.h"
 +#include "Common/Logging/Log.h"
 +#include "InputCommon/ControllerInterface/ControllerInterface.h"
++#include "usbpad.h"
 +
 +// The in-game menu (DolphinNoGUI/PS4IngameMenu.cpp) reads the first DualShock 4 itself; while
 +// it is open, and until its buttons are released, the game sees a neutral pad.
@@ -43873,6 +43961,60 @@ index 0000000..b3df183
 +
 +// Settings -> System -> Wii Remote (PS4Controls.cpp): is player's PS Move on? Opens it if so.
 +extern "C" int ps4_move_connected(int32_t user_id);
++
++// Off in Wii games with a Nunchuk: the adapter's A/B are then the Nunchuk's Z/C ("USB A"/"USB B"),
++// not the Wii Remote's A and Shake.
++extern "C" int ps4_usb_faces = 1;
++
++namespace
++{
++// A USB pad (usbpad) laid over a DualShock 4 state, laid out by position: the Xbox A/B/X/Y are
++// Cross/Circle/Square/Triangle.
++void MergeUsbPad(const usbpad_state& usb, OrbisPadData& state, bool faces = true)
++{
++  struct Map
++  {
++    uint32_t usb;
++    uint32_t orbis;
++  };
++  static constexpr Map MAP[] = {
++      {USBPAD_BTN_A, ORBIS_PAD_BUTTON_CROSS},        {USBPAD_BTN_B, ORBIS_PAD_BUTTON_CIRCLE},
++      {USBPAD_BTN_X, ORBIS_PAD_BUTTON_SQUARE},       {USBPAD_BTN_Y, ORBIS_PAD_BUTTON_TRIANGLE},
++      {USBPAD_BTN_LB, ORBIS_PAD_BUTTON_L1},          {USBPAD_BTN_RB, ORBIS_PAD_BUTTON_R1},
++      {USBPAD_BTN_BACK, ORBIS_PAD_BUTTON_TOUCH_PAD}, {USBPAD_BTN_START, ORBIS_PAD_BUTTON_OPTIONS},
++      {USBPAD_BTN_L3 | USBPAD_BTN_GUIDE, ORBIS_PAD_BUTTON_L3}, {USBPAD_BTN_R3, ORBIS_PAD_BUTTON_R3},
++      {USBPAD_BTN_DPAD_UP, ORBIS_PAD_BUTTON_UP},     {USBPAD_BTN_DPAD_DOWN, ORBIS_PAD_BUTTON_DOWN},
++      {USBPAD_BTN_DPAD_LEFT, ORBIS_PAD_BUTTON_LEFT}, {USBPAD_BTN_DPAD_RIGHT, ORBIS_PAD_BUTTON_RIGHT},
++  };
++  for (const Map& m : MAP)
++  {
++    const bool face = m.usb == USBPAD_BTN_A || m.usb == USBPAD_BTN_B || m.usb == USBPAD_BTN_X ||
++                      m.usb == USBPAD_BTN_Y;
++    if ((usb.buttons & m.usb) && (faces || !face))
++      state.buttons |= m.orbis;
++  }
++  state.analogButtons.l2 = std::max(state.analogButtons.l2, usb.lt);
++  state.analogButtons.r2 = std::max(state.analogButtons.r2, usb.rt);
++  // The click comes with the analog value, near the end of the travel like a GameCube pad's.
++  if (usb.lt > 200)
++    state.buttons |= ORBIS_PAD_BUTTON_L2;
++  if (usb.rt > 200)
++    state.buttons |= ORBIS_PAD_BUTTON_R2;
++  // Centred at 128, 0 = up (the DualShock 4's layout); the larger deflection wins.
++  auto merge = [](uint8_t& dst, int value) {
++    if (std::abs(value - 128) > std::abs(dst - 128))
++      dst = static_cast<uint8_t>(value);
++  };
++  // With a Nunchuk the GBros. adapter sends a frame between the real ones with every stick in a
++  // corner; it would win the merge below.
++  if (usb.lx == 32512 && usb.ly == -32768 && usb.rx == 32512 && usb.ry == -32768)
++    return;
++  merge(state.leftStick.x, (usb.lx + 32768) >> 8);
++  merge(state.leftStick.y, (32767 - usb.ly) >> 8);
++  merge(state.rightStick.x, (usb.rx + 32768) >> 8);
++  merge(state.rightStick.y, (32767 - usb.ry) >> 8);
++}
++}  // namespace
 +
 +namespace ciface::PS4Pad
 +{
@@ -43963,7 +44105,8 @@ index 0000000..b3df183
 +  };
 +
 +public:
-+  Device(int32_t user_id, int32_t handle) : m_user_id(user_id), m_handle(handle)
++  Device(int32_t user_id, int32_t handle, int player)
++      : m_user_id(user_id), m_handle(handle), m_player(player)
 +  {
 +    // clang-format off
 +    AddInput(new Button("Cross",         m_buttons, ORBIS_PAD_BUTTON_CROSS));
@@ -43978,6 +44121,8 @@ index 0000000..b3df183
 +    AddInput(new Button("R3",            m_buttons, ORBIS_PAD_BUTTON_R3));
 +    AddInput(new Button("Options",       m_buttons, ORBIS_PAD_BUTTON_OPTIONS));
 +    AddInput(new Button("Touchpad",      m_buttons, ORBIS_PAD_BUTTON_TOUCH_PAD));
++    AddInput(new Button("USB A",         m_usb_buttons, USBPAD_BTN_A));
++    AddInput(new Button("USB B",         m_usb_buttons, USBPAD_BTN_B));
 +    AddInput(new Button("Pad N",         m_buttons, ORBIS_PAD_BUTTON_UP));
 +    AddInput(new Button("Pad S",         m_buttons, ORBIS_PAD_BUTTON_DOWN));
 +    AddInput(new Button("Pad W",         m_buttons, ORBIS_PAD_BUTTON_LEFT));
@@ -44174,6 +44319,17 @@ index 0000000..b3df183
 +      m_state.rightStick = {128, 128};
 +      m_state.analogButtons = {0, 0};
 +    }
++    // A USB pad in this player's slot (usbpad) adds its input, laid out by position: the Xbox
++    // A/B/X/Y are Cross/Circle/Square/Triangle.
++    usbpad_state usb;
++    m_usb_buttons = 0;
++    if (!ps4_pad_block && usbpad_get(m_player, nullptr, &usb))
++    {
++      m_usb_buttons = usb.buttons;
++      m_state.buttons = m_buttons;
++      MergeUsbPad(usb, m_state, ps4_usb_faces != 0);
++      m_buttons = m_state.buttons;
++    }
 +    return Core::DeviceRemoval::Keep;
 +  }
 +
@@ -44190,6 +44346,7 @@ index 0000000..b3df183
 +private:
 +  const int32_t m_user_id;
 +  const int32_t m_handle;
++  const int m_player;  // 0-based, also the usbpad slot
 +  OrbisPadData m_state{};
 +  float m_touch_x = 0.0f, m_touch_y = 0.0f, m_swipe_x = 0.0f, m_swipe_y = 0.0f;
 +  float m_touching = 0.0f, m_touch_last_x = 0.0f, m_touch_last_y = 0.0f;
@@ -44199,6 +44356,7 @@ index 0000000..b3df183
 +  bool m_motion_real = false;
 +  float m_prev_motion[6]{};
 +  u32 m_buttons = 0;
++  u32 m_usb_buttons = 0;
 +  OrbisPadVibeParam m_vibration{0, 0};
 +  int m_reads = 0;
 +  int m_motion_logged = 0;
@@ -44492,6 +44650,8 @@ index 0000000..b3df183
 +    // Already initialized by another part of the app is fine.
 +    if (result != 0 && result != static_cast<int32_t>(0x80960003))
 +      WARN_LOG_FMT(CONTROLLERINTERFACE, "sceUserServiceInitialize: {:#x}", static_cast<u32>(result));
++    usbpad_set_log([](const char* line) { ps4_boot_trace(line); });
++    usbpad_init();
 +    result = scePadInit();
 +    if (result != 0)
 +      ERROR_LOG_FMT(CONTROLLERINTERFACE, "scePadInit: {:#x}", static_cast<u32>(result));
@@ -44561,7 +44721,7 @@ index 0000000..b3df183
 +      }
 +      if (count == 0)
 +        ps4_pad_handle = it->second;
-+      GetControllerInterface().AddDevice(std::make_shared<Device>(user, it->second));
++      GetControllerInterface().AddDevice(std::make_shared<Device>(user, it->second, count));
 +      count++;
 +    }
 +    ps4_pad_count = count;
@@ -44594,6 +44754,34 @@ index 0000000..b3df183
 +extern "C" int ps4_move_connected(int32_t user_id)
 +{
 +  return ciface::PS4Pad::MoveConnected(ciface::PS4Pad::MoveHandle(user_id)) ? 1 : 0;
++}
++
++// The menus (XMB, in-game menu) read the first player's pad through this: the DualShock 4 as
++// scePadReadState, with a USB pad in slot 0 laid over it. Same return values as scePadReadState.
++extern "C" int ps4_pad_read(int handle, OrbisPadData* data)
++{
++  static bool s_usb_started = false;
++  if (!s_usb_started)
++  {
++    s_usb_started = true;
++    usbpad_init();
++  }
++  const int result = scePadReadState(handle, data);
++  usbpad_state usb;
++  if (usbpad_get(0, nullptr, &usb))
++  {
++    if (result != 0)
++    {
++      // No DualShock 4 (or not read this time): the USB pad alone.
++      std::memset(data, 0, sizeof(*data));
++      data->leftStick = {128, 128};
++      data->rightStick = {128, 128};
++    }
++    data->connected = true;
++    MergeUsbPad(usb, *data);
++    return 0;
++  }
++  return result;
 +}
 diff --git a/Source/Core/InputCommon/ControllerInterface/PS4Pad/PS4Pad.h b/Source/Core/InputCommon/ControllerInterface/PS4Pad/PS4Pad.h
 new file mode 100644
@@ -57081,6 +57269,551 @@ index 0000000..3317422
 +void VerifyBeginFromJit(JitPS4* jit, u32 pc);
 +void VerifyExitFromJit(JitPS4* jit, u32 destination);
 +}  // namespace PS4Jit
+diff --git a/Source/Core/InputCommon/ControllerInterface/PS4Pad/usbpad/CMakeLists.txt b/Source/Core/InputCommon/ControllerInterface/PS4Pad/usbpad/CMakeLists.txt
+new file mode 100644
+index 0000000000..156a5f43fb
+--- /dev/null
++++ b/Source/Core/InputCommon/ControllerInterface/PS4Pad/usbpad/CMakeLists.txt
+@@ -0,0 +1,27 @@
++# usbpad: USB game controllers for PS4 homebrew through sceUsbd (see include/usbpad.h).
++# Library target "usbpad" (static) for use via add_subdirectory(); the demo app is built by
++# scripts/build-usbpad-demo.sh. Configure with a PacBrew-based toolchain file (ps4-love-modern.cmake).
++cmake_minimum_required(VERSION 3.13)
++project(usbpad C CXX)
++
++set(CMAKE_CXX_STANDARD 20)
++set(CMAKE_CXX_STANDARD_REQUIRED ON)
++if (NOT CMAKE_BUILD_TYPE)
++    set(CMAKE_BUILD_TYPE Release)
++endif ()
++
++add_library(usbpad STATIC src/usbpad.cpp src/drv_xinput.cpp)
++target_include_directories(usbpad PUBLIC ${CMAKE_CURRENT_LIST_DIR}/include)
++target_compile_options(usbpad PRIVATE -Wall)
++# orbis/Usbd.h includes <libusb.h>, which the toolchain keeps in include/orbis/_types. _types
++# also has a pthread.h, so it must come after the system headers (-idirafter).
++set_source_files_properties(src/usbpad.cpp PROPERTIES
++    COMPILE_OPTIONS "-idirafter;${OPENORBIS}/include/orbis/_types")
++target_link_libraries(usbpad PUBLIC SceSysmodule SceUsbd pthread)
++
++if (CMAKE_PROJECT_NAME STREQUAL "usbpad")
++    include(${CMAKE_CURRENT_LIST_DIR}/../toolchain/ps4-love-style.cmake)
++    add_executable(usbpad_demo demo/main.cpp ${PS4_RUNTIME_SOURCES})
++    target_link_libraries(usbpad_demo PRIVATE usbpad)
++    ps4_add_eboot(usbpad_demo)
++endif ()
+diff --git a/Source/Core/InputCommon/ControllerInterface/PS4Pad/usbpad/README.md b/Source/Core/InputCommon/ControllerInterface/PS4Pad/usbpad/README.md
+new file mode 100644
+index 0000000000..19533b64b9
+--- /dev/null
++++ b/Source/Core/InputCommon/ControllerInterface/PS4Pad/usbpad/README.md
+@@ -0,0 +1,16 @@
++# usbpad
++
++USB game controllers for PS4 homebrew (OpenOrbis) through `sceUsbd`. Independent of Dolphin.
++
++- C API in `include/usbpad.h`: `usbpad_init()`, `usbpad_get(slot, &info, &state)`.
++- Hotplug by rescanning once per second; one reader thread per pad.
++- Drivers: XInput (Xbox 360 class; 8BitDo GBros. in XInput mode). More (Switch Pro, generic HID) are
++  planned; a driver is a `match()` + `parse()` pair, see `src/driver.h`.
++- Read-only: nothing is written to the pad (no rumble yet).
++- Build the demo app: `scripts/build-usbpad-demo.sh [upload]`; it logs to `/data/DolphinPS4/usbpad-demo.log`.
++
++Notes from testing on the PS4:
++
++- sceUsbd reports libusb error `-N` as `0x80240000 + N`; an idle read returns `0x80240007` (timeout).
++- The device list is freed without unreferencing the devices (`unref=0`); that leaks one small
++  reference per device per scan (once per second) and is a known open point.
+diff --git a/Source/Core/InputCommon/ControllerInterface/PS4Pad/usbpad/include/usbpad.h b/Source/Core/InputCommon/ControllerInterface/PS4Pad/usbpad/include/usbpad.h
+new file mode 100644
+index 0000000000..6870bd6606
+--- /dev/null
++++ b/Source/Core/InputCommon/ControllerInterface/PS4Pad/usbpad/include/usbpad.h
+@@ -0,0 +1,67 @@
++/* usbpad: third-party USB game controllers on PS4 homebrew (OpenOrbis), through sceUsbd.
++ *
++ * Independent of Dolphin: a plain C API any OpenOrbis project can use. Devices are found and
++ * dropped again while running (hotplug), each is served by a small driver that turns the
++ * device's input reports into one common state. Read-only: nothing is ever sent to a pad.
++ *
++ * Drivers so far: XInput (Xbox 360 class pads, 8BitDo GBros. in XInput mode, ...).
++ * Thread-safe; usbpad_get() may be called from any thread.
++ */
++#ifndef USBPAD_H
++#define USBPAD_H
++
++#include <stdint.h>
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++#define USBPAD_MAX_PADS 8
++
++/* Button bits (Xbox layout names; A is the bottom face button). */
++enum {
++    USBPAD_BTN_A = 1u << 0,
++    USBPAD_BTN_B = 1u << 1,
++    USBPAD_BTN_X = 1u << 2,
++    USBPAD_BTN_Y = 1u << 3,
++    USBPAD_BTN_LB = 1u << 4,
++    USBPAD_BTN_RB = 1u << 5,
++    USBPAD_BTN_BACK = 1u << 6,
++    USBPAD_BTN_START = 1u << 7,
++    USBPAD_BTN_GUIDE = 1u << 8,
++    USBPAD_BTN_L3 = 1u << 9,
++    USBPAD_BTN_R3 = 1u << 10,
++    USBPAD_BTN_DPAD_UP = 1u << 11,
++    USBPAD_BTN_DPAD_DOWN = 1u << 12,
++    USBPAD_BTN_DPAD_LEFT = 1u << 13,
++    USBPAD_BTN_DPAD_RIGHT = 1u << 14,
++};
++
++typedef struct {
++    uint32_t buttons;       /* USBPAD_BTN_* */
++    int16_t lx, ly, rx, ry; /* -32768..32767, up and right are positive */
++    uint8_t lt, rt;         /* analog triggers, 0..255 */
++    uint32_t sequence;      /* increments with every report received */
++} usbpad_state;
++
++typedef struct {
++    uint16_t vid, pid;
++    char driver[16];        /* name of the driver serving this pad, e.g. "xinput" */
++} usbpad_info;
++
++/* Optional; called from library threads. Set before usbpad_init(). */
++void usbpad_set_log(void (*fn)(const char* line));
++
++/* Loads the USB module and starts device scanning. Returns 0 on success. */
++int usbpad_init(void);
++void usbpad_shutdown(void);
++
++/* Slot 0..USBPAD_MAX_PADS-1; a pad keeps its slot while it stays plugged in.
++ * Returns 1 and fills the outputs (either may be NULL) if a pad is connected there, else 0. */
++int usbpad_get(int slot, usbpad_info* info, usbpad_state* state);
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif
+diff --git a/Source/Core/InputCommon/ControllerInterface/PS4Pad/usbpad/src/driver.h b/Source/Core/InputCommon/ControllerInterface/PS4Pad/usbpad/src/driver.h
+new file mode 100644
+index 0000000000..687eaafe55
+--- /dev/null
++++ b/Source/Core/InputCommon/ControllerInterface/PS4Pad/usbpad/src/driver.h
+@@ -0,0 +1,33 @@
++// Internal: what a controller driver has to provide.
++#pragma once
++
++#include <stdint.h>
++
++#include "usbpad.h"
++
++namespace usbpad {
++
++struct InterfaceInfo {
++    uint8_t number;
++    uint8_t cls, sub, proto;
++    uint8_t inEndpoint;  // first interrupt-IN endpoint of alt setting 0, 0 if none
++    uint16_t inMaxPacket;
++};
++
++struct DeviceInfo {
++    uint16_t vid, pid;
++    uint8_t numInterfaces;
++    InterfaceInfo interfaces[8];
++};
++
++struct Driver {
++    const char* name;
++    // Returns the interface to claim and read from, or nullptr if this driver does not fit.
++    const InterfaceInfo* (*match)(const DeviceInfo& dev);
++    // Applies one input report to state; false if the report is not an input report.
++    bool (*parse)(const uint8_t* data, int len, usbpad_state& state);
++};
++
++extern const Driver kXInputDriver;
++
++}  // namespace usbpad
+diff --git a/Source/Core/InputCommon/ControllerInterface/PS4Pad/usbpad/src/drv_xinput.cpp b/Source/Core/InputCommon/ControllerInterface/PS4Pad/usbpad/src/drv_xinput.cpp
+new file mode 100644
+index 0000000000..79b236dc84
+--- /dev/null
++++ b/Source/Core/InputCommon/ControllerInterface/PS4Pad/usbpad/src/drv_xinput.cpp
+@@ -0,0 +1,59 @@
++// XInput (Xbox 360 wired protocol): vendor class 0xFF, subclass 0x5D, protocol 0x01, interrupt IN
++// endpoint with 20-byte reports. Layout as measured on an 8BitDo GBros. in XInput mode on PS4:
++//   0: 0x00 (input report)  1: 0x14 (length)  2: d-pad, Start, Back, L3, R3  3: LB, RB, Guide, A B X Y
++//   4: LT  5: RT  6..13: LX LY RX RY (int16 little endian, up positive)
++#include "driver.h"
++
++namespace usbpad {
++namespace {
++
++const InterfaceInfo* match(const DeviceInfo& dev) {
++    for (int i = 0; i < dev.numInterfaces; i++) {
++        const InterfaceInfo& itf = dev.interfaces[i];
++        if (itf.cls == 0xFF && itf.sub == 0x5D && itf.proto == 0x01 && itf.inEndpoint)
++            return &itf;
++    }
++    return nullptr;
++}
++
++int16_t s16(const uint8_t* p) {
++    return static_cast<int16_t>(p[0] | (p[1] << 8));
++}
++
++bool parse(const uint8_t* d, int len, usbpad_state& s) {
++    if (len < 14 || d[0] != 0x00 || d[1] < 14)
++        return false;
++    struct Bit {
++        int byte;
++        uint8_t mask;
++        uint32_t button;
++    };
++    static const Bit kBits[] = {
++        {2, 0x01, USBPAD_BTN_DPAD_UP}, {2, 0x02, USBPAD_BTN_DPAD_DOWN},
++        {2, 0x04, USBPAD_BTN_DPAD_LEFT}, {2, 0x08, USBPAD_BTN_DPAD_RIGHT},
++        {2, 0x10, USBPAD_BTN_START}, {2, 0x20, USBPAD_BTN_BACK},
++        {2, 0x40, USBPAD_BTN_L3}, {2, 0x80, USBPAD_BTN_R3},
++        {3, 0x01, USBPAD_BTN_LB}, {3, 0x02, USBPAD_BTN_RB},
++        {3, 0x04, USBPAD_BTN_GUIDE}, {3, 0x10, USBPAD_BTN_A},
++        {3, 0x20, USBPAD_BTN_B}, {3, 0x40, USBPAD_BTN_X},
++        {3, 0x80, USBPAD_BTN_Y},
++    };
++    uint32_t buttons = 0;
++    for (const Bit& b : kBits)
++        if (d[b.byte] & b.mask)
++            buttons |= b.button;
++    s.buttons = buttons;
++    s.lt = d[4];
++    s.rt = d[5];
++    s.lx = s16(d + 6);
++    s.ly = s16(d + 8);
++    s.rx = s16(d + 10);
++    s.ry = s16(d + 12);
++    return true;
++}
++
++}  // namespace
++
++const Driver kXInputDriver = {"xinput", match, parse};
++
++}  // namespace usbpad
+diff --git a/Source/Core/InputCommon/ControllerInterface/PS4Pad/usbpad/src/usbpad.cpp b/Source/Core/InputCommon/ControllerInterface/PS4Pad/usbpad/src/usbpad.cpp
+new file mode 100644
+index 0000000000..64f4638491
+--- /dev/null
++++ b/Source/Core/InputCommon/ControllerInterface/PS4Pad/usbpad/src/usbpad.cpp
+@@ -0,0 +1,307 @@
++// usbpad core: device discovery (hotplug by rescanning), one reader thread per pad.
++#include <orbis/Sysmodule.h>
++#include <orbis/Usbd.h>
++#include <orbis/libkernel.h>
++#include <pthread.h>
++#include <stdarg.h>
++#include <stdio.h>
++#include <string.h>
++
++#include "driver.h"
++#include "usbpad.h"
++
++// _types/libusb.h only forward-declares this; layout is libusb 1.0's.
++struct libusb_endpoint_descriptor {
++    uint8_t bLength;
++    uint8_t bDescriptorType;
++    uint8_t bEndpointAddress;
++    uint8_t bmAttributes;
++    uint16_t wMaxPacketSize;
++    uint8_t bInterval;
++    uint8_t bRefresh;
++    uint8_t bSynchAddress;
++    const unsigned char* extra;
++    int32_t extra_length;
++};
++
++// libusb_free_device_list() takes (list, unref_devices); the wrapper header declares one argument.
++extern "C" void usbpad_free_device_list(libusb_device** list, int unref) __asm__("sceUsbdFreeDeviceList");
++
++namespace usbpad {
++namespace {
++
++// sceUsbd reports libusb error -N as 0x80240000 + N (timeout: 0x80240007).
++bool isTimeout(int r) {
++    return r == -7 || static_cast<uint32_t>(r) == 0x80240007u;
++}
++constexpr int kScanIntervalUs = 1000000;
++constexpr int kReadTimeoutMs = 8;
++
++const Driver* const kDrivers[] = {&kXInputDriver};
++
++struct Slot {
++    bool used = false;
++    bool alive = false;  // reader thread running
++    bool stop = false;
++    uint16_t key = 0;    // bus << 8 | address
++    const Driver* driver = nullptr;
++    InterfaceInfo itf = {};
++    usbpad_info info = {};
++    usbpad_state state = {};
++    libusb_device_handle* handle = nullptr;
++    pthread_t thread = {};
++};
++
++pthread_mutex_t g_mutex = PTHREAD_MUTEX_INITIALIZER;
++Slot g_slots[USBPAD_MAX_PADS];
++pthread_t g_scanThread;
++bool g_running = false;
++bool g_inited = false;
++void (*g_log)(const char*) = nullptr;
++
++__attribute__((format(printf, 1, 2))) void logf(const char* fmt, ...) {
++    if (!g_log)
++        return;
++    char buf[256];
++    va_list ap;
++    va_start(ap, fmt);
++    vsnprintf(buf, sizeof(buf), fmt, ap);
++    va_end(ap);
++    g_log(buf);
++}
++
++void* readerMain(void* arg) {
++    Slot* s = static_cast<Slot*>(arg);
++    uint8_t buf[64];
++    const int len = s->itf.inMaxPacket > 0 && s->itf.inMaxPacket < sizeof(buf) ? s->itf.inMaxPacket
++                                                                              : sizeof(buf);
++    for (;;) {
++        pthread_mutex_lock(&g_mutex);
++        const bool stop = s->stop;
++        pthread_mutex_unlock(&g_mutex);
++        if (stop)
++            break;
++        int got = 0;
++        int r = sceUsbdInterruptTransfer(s->handle, s->itf.inEndpoint, buf, len, &got, kReadTimeoutMs);
++        if (r == 0 && got > 0) {
++            pthread_mutex_lock(&g_mutex);
++            if (s->driver->parse(buf, got, s->state))
++                s->state.sequence++;
++            pthread_mutex_unlock(&g_mutex);
++        } else if (r != 0 && !isTimeout(r)) {
++            logf("usbpad: %04X:%04X read error %d, dropping pad", s->info.vid, s->info.pid, r);
++            break;
++        }
++    }
++    sceUsbdReleaseInterface(s->handle, s->itf.number);
++    sceUsbdClose(s->handle);
++    pthread_mutex_lock(&g_mutex);
++    s->alive = false;
++    pthread_mutex_unlock(&g_mutex);
++    return nullptr;
++}
++
++bool describe(libusb_device* dev, DeviceInfo& out) {
++    libusb_device_descriptor dd = {};
++    if (sceUsbdGetDeviceDescriptor(dev, &dd) < 0)
++        return false;
++    out = {};
++    out.vid = dd.idVendor;
++    out.pid = dd.idProduct;
++    libusb_config_descriptor* cfg = nullptr;
++    if (sceUsbdGetActiveConfigDescriptor(dev, &cfg) < 0 || !cfg)
++        return false;
++    for (int i = 0; i < cfg->bNumInterfaces; i++) {
++        const libusb_interface& intf = cfg->interface[i];
++        if (intf.num_altsetting < 1 || out.numInterfaces >= 8)
++            continue;
++        const libusb_interface_descriptor& d = intf.altsetting[0];
++        InterfaceInfo& ii = out.interfaces[out.numInterfaces++];
++        ii = {d.bInterfaceNumber, d.bInterfaceClass, d.bInterfaceSubClass, d.bInterfaceProtocol, 0, 0};
++        for (int e = 0; e < d.bNumEndpoints; e++) {
++            const libusb_endpoint_descriptor& ep = d.endpoint[e];
++            if ((ep.bEndpointAddress & 0x80) && (ep.bmAttributes & 3) == 3) {
++                ii.inEndpoint = ep.bEndpointAddress;
++                ii.inMaxPacket = ep.wMaxPacketSize & 0x7FF;
++                break;
++            }
++        }
++    }
++    sceUsbdFreeConfigDescriptor(cfg);
++    return true;
++}
++
++void tryStart(libusb_device* dev, uint16_t key) {
++    DeviceInfo di;
++    if (!describe(dev, di))
++        return;
++    const Driver* driver = nullptr;
++    const InterfaceInfo* itf = nullptr;
++    for (const Driver* d : kDrivers) {
++        if ((itf = d->match(di))) {
++            driver = d;
++            break;
++        }
++    }
++    if (!driver)
++        return;
++
++    int free = -1;
++    pthread_mutex_lock(&g_mutex);
++    for (int i = 0; i < USBPAD_MAX_PADS; i++) {
++        if (!g_slots[i].used) {
++            free = free < 0 ? i : free;
++        } else if (g_slots[i].key == key) {
++            pthread_mutex_unlock(&g_mutex);
++            return;
++        }
++    }
++    pthread_mutex_unlock(&g_mutex);
++    if (free < 0) {
++        logf("usbpad: no free slot for %04X:%04X", di.vid, di.pid);
++        return;
++    }
++
++    libusb_device_handle* h = nullptr;
++    int r = sceUsbdOpen(dev, &h);
++    if (r < 0 || !h) {
++        logf("usbpad: open %04X:%04X failed (%d)", di.vid, di.pid, r);
++        return;
++    }
++    r = sceUsbdClaimInterface(h, itf->number);
++    if (r < 0) {
++        logf("usbpad: claim %04X:%04X interface %u failed (%d)", di.vid, di.pid, itf->number, r);
++        sceUsbdClose(h);
++        return;
++    }
++
++    Slot& s = g_slots[free];
++    pthread_mutex_lock(&g_mutex);
++    s = Slot();
++    s.used = true;
++    s.alive = true;
++    s.key = key;
++    s.driver = driver;
++    s.itf = *itf;
++    s.handle = h;
++    s.info.vid = di.vid;
++    s.info.pid = di.pid;
++    snprintf(s.info.driver, sizeof(s.info.driver), "%s", driver->name);
++    pthread_mutex_unlock(&g_mutex);
++    if (pthread_create(&s.thread, nullptr, readerMain, &s) != 0) {
++        logf("usbpad: reader thread for %04X:%04X failed", di.vid, di.pid);
++        sceUsbdReleaseInterface(h, itf->number);
++        sceUsbdClose(h);
++        pthread_mutex_lock(&g_mutex);
++        s = Slot();
++        pthread_mutex_unlock(&g_mutex);
++        return;
++    }
++    logf("usbpad: slot %d: %04X:%04X (%s)", free, di.vid, di.pid, driver->name);
++}
++
++// Frees slots whose reader thread has ended (pad unplugged or read error).
++void reap() {
++    for (int i = 0; i < USBPAD_MAX_PADS; i++) {
++        pthread_mutex_lock(&g_mutex);
++        const bool dead = g_slots[i].used && !g_slots[i].alive;
++        pthread_mutex_unlock(&g_mutex);
++        if (!dead)
++            continue;
++        pthread_join(g_slots[i].thread, nullptr);
++        logf("usbpad: slot %d released", i);
++        pthread_mutex_lock(&g_mutex);
++        g_slots[i] = Slot();
++        pthread_mutex_unlock(&g_mutex);
++    }
++}
++
++void* scanMain(void*) {
++    for (;;) {
++        pthread_mutex_lock(&g_mutex);
++        const bool running = g_running;
++        pthread_mutex_unlock(&g_mutex);
++        if (!running)
++            break;
++        reap();
++        libusb_device** list = nullptr;
++        const int n = sceUsbdGetDeviceList(&list);
++        for (int i = 0; i < n && list; i++) {
++            const uint16_t key = static_cast<uint16_t>((sceUsbdGetBusNumber(list[i]) << 8) |
++                                                       sceUsbdGetDeviceAddress(list[i]));
++            tryStart(list[i], key);
++        }
++        // A pad that vanished from the bus ends through its read error.
++        if (list && n >= 0)
++            usbpad_free_device_list(list, 0);
++        sceKernelUsleep(kScanIntervalUs);
++    }
++    return nullptr;
++}
++
++}  // namespace
++}  // namespace usbpad
++
++extern "C" {
++
++void usbpad_set_log(void (*fn)(const char*)) {
++    usbpad::g_log = fn;
++}
++
++int usbpad_init(void) {
++    using namespace usbpad;
++    if (g_inited)
++        return 0;
++    int r = sceSysmoduleLoadModule(ORBIS_SYSMODULE_USBD);
++    logf("usbpad: load USBD module = 0x%X", r);
++    r = sceUsbdInit();
++    if (r < 0) {
++        logf("usbpad: sceUsbdInit = %d", r);
++        return r;
++    }
++    g_running = true;
++    if (pthread_create(&g_scanThread, nullptr, scanMain, nullptr) != 0) {
++        g_running = false;
++        return -1;
++    }
++    g_inited = true;
++    return 0;
++}
++
++void usbpad_shutdown(void) {
++    using namespace usbpad;
++    if (!g_inited)
++        return;
++    pthread_mutex_lock(&g_mutex);
++    g_running = false;
++    for (Slot& s : g_slots)
++        s.stop = true;
++    pthread_mutex_unlock(&g_mutex);
++    pthread_join(g_scanThread, nullptr);
++    for (Slot& s : g_slots)
++        if (s.used)
++            pthread_join(s.thread, nullptr);
++    for (Slot& s : g_slots)
++        s = Slot();
++    sceUsbdExit();
++    g_inited = false;
++}
++
++int usbpad_get(int slot, usbpad_info* info, usbpad_state* state) {
++    using namespace usbpad;
++    if (slot < 0 || slot >= USBPAD_MAX_PADS)
++        return 0;
++    pthread_mutex_lock(&g_mutex);
++    const Slot& s = g_slots[slot];
++    const bool ok = s.used && s.alive;
++    if (ok) {
++        if (info)
++            *info = s.info;
++        if (state)
++            *state = s.state;
++    }
++    pthread_mutex_unlock(&g_mutex);
++    return ok ? 1 : 0;
++}
++
++}  // extern "C"
 diff --git a/Source/Core/DolphinNoGUI/PS4Skylanders.cpp b/Source/Core/DolphinNoGUI/PS4Skylanders.cpp
 new file mode 100644
 index 0000000..4a6235e
