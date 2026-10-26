@@ -98,4 +98,4 @@ Each script's comments explain its steps and options.
 | `scripts/` | Build, package and console scripts, and the asset generators (icon, menu sounds, start-up animation) |
 | `xmb/` | Menu assets: fonts, sounds, start-up animation, built-in default settings, CA bundle |
 | `sce_sys/` | App icon and its source artwork |
-| `probe*/` | Small test apps used while bringing up the toolchain, Vulkan and GNM |
+| `probe*/` | Small test apps used while bringing up the toolchain, Vulkan, GNM and USB (`probe-usb`, `scripts/build-usb-probe.sh`) |
