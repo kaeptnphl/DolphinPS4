@@ -10,7 +10,7 @@ index 7897efb..2a06d04 100644
  
  	assert(rpc->magic == RPC_CONTEXT_MAGIC);
  
-@@ -1865,7 +1866,13 @@ rpc_connect_sockaddr_async(struct rpc_context *rpc)
+@@ -1865,7 +1866,9 @@ rpc_connect_sockaddr_async(struct rpc_context *rpc)
  		}
  	}
  
