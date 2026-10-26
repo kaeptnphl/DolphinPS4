@@ -15,11 +15,7 @@ index 7897efb..2a06d04 100644
  	}
  
 -	switch (s->ss_family) {
-+#ifdef HAVE_SOCKADDR_LEN
 +	family = ((const struct sockaddr *)s)->sa_family;
-+#else
-+	family = s->ss_family;
-+#endif
 +
 +	switch (family) {
  	case AF_INET:
